@@ -14,11 +14,21 @@ from gurobipy import quicksum
 
 # Ann Arbor police department (lat, long).
 ANN_ARBOR_PD_LAT_LNG = [42.28196926076756, -83.74584246097976]
-MY_HOUSE_LAT_LNG = [42.27256439392717, -83.73347206021178]
 TRADER_JOES_LAT_LNG = [42.258746816570365, -83.71303193019678]
+MULTI_LAT_LNG = [
+    [42.27419348603703, -83.75334117492699],
+    [42.272288185548014, -83.75583026469232],
+    [42.26790577584151, -83.75342700560856],
+    [42.25119901449918, -83.70922420460363],
+    [42.246497454817295, -83.71797893412305],
+    [42.2548202472297, -83.71471736822365],
+    [42.29743351411518, -83.7245878966034],
+    [42.29590984050696, -83.72862193863685],
+    [42.3072095425411, -83.72810695454747]
+]
 
 # Resolution for H3 cells (0-15).
-H3_RESOLUTION = 8
+H3_RESOLUTION = 7
 
 # Type alias for string representation of H3Index.
 H3IndexCell = str
@@ -36,9 +46,23 @@ class SurveillanceProgramParams:
         self.node_indices: List[H3IndexCell] = map_cells
 
         # List of nodes in the graph which must be viewed by drones. Drone = node_index.
-        self.drone_node_numbers: List[int] = [12, 13, 3, 9]  # TODO: Assign via cloud generation.
-        # self.drone_node_numbers: List[int] = [4]  # TODO: Assign via cloud generation.
-        # self.drone_node_numbers: List[int] = [i for i in range(len(self.node_indices))]  # TODO: Assign via cloud generation.
+        # self.drone_node_numbers: List[int] = [12, 13, 3, 9]
+        # self.drone_node_numbers: List[int] = [4]  #
+
+        # Single cover (Trader Joe's)
+        # single_node_index = h3.latlng_to_cell(TRADER_JOES_LAT_LNG[0],
+        #                                       TRADER_JOES_LAT_LNG[1],
+        #                                       H3_RESOLUTION)
+        # single_node_number = [number for number, index in enumerate(self.node_indices) if index == single_node_index][0]
+        # self.drone_node_numbers: List[int] = [single_node_number]
+
+        # Multi cover.
+        # multi_node_indices = [h3.latlng_to_cell(lat_lng[0], lat_lng[1], H3_RESOLUTION) for lat_lng in MULTI_LAT_LNG]
+        # multi_node_numbers_set = {number for number, index in enumerate(self.node_indices) if index in multi_node_indices}
+        # self.drone_node_numbers = list(multi_node_numbers_set)
+
+        # Full cover
+        self.drone_node_numbers: List[int] = [i for i in range(len(self.node_indices))]
 
         # The index of the node where all drones must start and finish their circuits.
         self.base_node_index: H3IndexCell = h3.latlng_to_cell(ANN_ARBOR_PD_LAT_LNG[0],
@@ -269,7 +293,8 @@ class MinTimeTotalCoverageSingleCircuitProgram:
 
         # Upper bound the circuit time of each drone with the max circuit time variable.
         self.program.addConstrs(1/params.drone_speed_kph * \
-                                 quicksum([self.drone_flows[drone_number, arc_number] \
+                                 quicksum([self.drone_flows[drone_number, arc_number] * \
+                                           params.arc_lengths_km[arc_number] \
                                            for arc_number in range(len(params.arc_indices))]) \
                                  <= self.max_drone_circuit_time_h for drone_number in params.drone_numbers)
 
@@ -346,6 +371,12 @@ class MinTimeTotalCoverageSingleCircuitProgram:
 
     def solve(self) -> None:
         """"""
+
+
+        # Limit solve time here for resolution 8 and 9.
+        self.program.params.TimeLimit = 600  # Ten minute solve
+
+
         self.program.optimize()
 
 
@@ -395,45 +426,45 @@ def main():
 
     # Set up parameters for the problem.
     map_cells = hexagons
-    num_drones = 3
+    num_drones = 1
     drone_recharge_time = 0
-    drone_range = 100  # 30ish works for resolution 7
-    drone_speed = 10
+    drone_range = 80  # km  # 30ish works for resolution 7
+    drone_speed = 100  # kph
     params = SurveillanceProgramParams(map_cells,
                                        num_drones,
                                        drone_recharge_time,
                                        drone_range,
                                        drone_speed)
 
-    # Set up and solve the problem.
-    model1 = MinTimeTotalCoverageSingleCircuitProgram(params)
-    model1.solve()
-
-    # Extract optimal flow variables.
-    optimal_variables : List[gp.Var] = model1.program.getVars()
-    optimal_total_time_h = optimal_variables[-1]
-    optimal_variables_array = np.array(optimal_variables)
-    num_drone_flow_vars = len(params.drone_numbers) * len(params.arc_indices)
-    num_artificial_flow_vars = num_drone_flow_vars
-    num_min_time_vars = 1
-    optimal_drone_flow = np.array(
-        optimal_variables[:num_drone_flow_vars]).reshape(len(params.drone_numbers), len(params.arc_indices))
-
-    print(f'Optimal total time (hrs): {optimal_total_time_h}')
-    # print(f'Optimal traveled range (km): {sum(optimal_drone_flow)}')
-
-    # Plot drone path in red.
-    colors = ['red', 'purple', 'orange']
-    for drone_number in params.drone_numbers:
-        color = colors[drone_number]
-        # if drone_number == 0:
-        for arc_number in range(len(params.arc_indices)):
-            if optimal_drone_flow[drone_number, arc_number].X > 0:
-                origin_lat_lng = h3.cell_to_latlng(h3.get_directed_edge_origin(params.arc_indices[arc_number]))
-                destination_lat_lng = h3.cell_to_latlng(h3.get_directed_edge_destination(params.arc_indices[arc_number]))
-                plt.plot([origin_lat_lng[1], destination_lat_lng[1]],
-                         [origin_lat_lng[0], destination_lat_lng[0]],
-                         color=color)
+    # # Set up and solve the problem.
+    # model1 = MinTimeTotalCoverageSingleCircuitProgram(params)
+    # model1.solve()
+    #
+    # # Extract optimal flow variables.
+    # optimal_variables : List[gp.Var] = model1.program.getVars()
+    # optimal_total_time_h = optimal_variables[-1]
+    # optimal_variables_array = np.array(optimal_variables)
+    # num_drone_flow_vars = len(params.drone_numbers) * len(params.arc_indices)
+    # num_artificial_flow_vars = num_drone_flow_vars
+    # num_min_time_vars = 1
+    # optimal_drone_flow = np.array(
+    #     optimal_variables[:num_drone_flow_vars]).reshape(len(params.drone_numbers), len(params.arc_indices))
+    #
+    # print(f'Optimal total time (hrs): {optimal_total_time_h}')
+    # # print(f'Optimal traveled range (km): {sum(optimal_drone_flow)}')
+    #
+    # # Plot drone path in red.
+    # colors = ['red', 'purple', 'orange', 'cyan', 'black']
+    # for drone_number in params.drone_numbers:
+    #     color = colors[drone_number]
+    #     # if drone_number == 0:
+    #     for arc_number in range(len(params.arc_indices)):
+    #         if optimal_drone_flow[drone_number, arc_number].X > 0:
+    #             origin_lat_lng = h3.cell_to_latlng(h3.get_directed_edge_origin(params.arc_indices[arc_number]))
+    #             destination_lat_lng = h3.cell_to_latlng(h3.get_directed_edge_destination(params.arc_indices[arc_number]))
+    #             plt.plot([origin_lat_lng[1], destination_lat_lng[1]],
+    #                      [origin_lat_lng[0], destination_lat_lng[0]],
+    #                      color=color)
 
     # # Plot all edges.
     # for arc_index in params.arc_indices:
